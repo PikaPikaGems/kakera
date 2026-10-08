@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kakera Host Tests</title>
+<style>
+  :root { --bg: #fff; --fg: #1a1a1a; --muted: #666; --ok: #15803d; --bad: #b91c1c; --code: #f4f4f5; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #999; --ok: #4ade80; --bad: #f87171; --code: #1c1c1f; } }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 720px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { color: var(--muted); margin: 0 0 12px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  pre { background: var(--code); border-radius: 6px; padding: 8px; white-space: pre-wrap; font-size: 13px; }
+  #summary { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>kakera host tests</h1>
+<p>Runs a test engine in a real worker with real files. Needs <code>node test/make-fixtures.mjs</code> first.
+  The crash-guard test reloads the page once.</p>
+<p id="summary">Running...</p>
+<ol id="results"></ol>
+<script type="module" src="./host-test.js"></script>
+</body>
+</html>

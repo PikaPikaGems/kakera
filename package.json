@@ -6,7 +6,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./worker": "./src/worker.js",
+    "./files": "./src/files.js",
+    "./split": "./src/split.js",
+    "./errors": "./src/errors.js"
   },
   "bin": {
     "kakera": "./bin/kakera.mjs"
