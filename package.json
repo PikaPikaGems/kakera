@@ -1,0 +1,17 @@
+{
+  "name": "kakera",
+  "version": "0.0.0",
+  "description": "Shared plumbing for wakachi and yomiage: big files in parts, IndexedDB cache, worker host with crash guard. Bundled into those packages, not installed by apps.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "kakera": "./bin/kakera.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}
