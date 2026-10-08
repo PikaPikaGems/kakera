@@ -11,6 +11,7 @@ serveEngine({
     await ctx.loadFiles({
       onFile: async (file, chunks) => { sizes[file.name] = (await collect(chunks, file.size)).length; },
     });
+    ctx.step("start-engine"); // an engine's own step, after the files
     return { sizes }; // fromCache is added by serveEngine
   },
   calls: {

@@ -7,7 +7,9 @@
 //   });
 //
 // Messages in:  { id, type: "load", manifestUrl, dbName }  |  { id, type: <call name>, ...payload }
-// Messages out: { id, type: "progress", loaded, total } | { id, type: "alive" } | { id, type: "log", msg }
+// Messages out: { id, type: "progress", loaded, total } (a call's own progress)
+//               | { id, type: "progress", step, ...details } (loading: a file step, or an engine step from ctx.step)
+//               | { id, type: "alive" } | { id, type: "log", msg }
 //               | { id, type: "done", result } | { id, type: "error", code, message }
 import { codedError, errorCode } from "./errors.js";
 import { fileStore } from "./files.js";
@@ -31,11 +33,12 @@ export function serveEngine({ load, calls }) {
     const ctx = {
       progress: (loaded, total) => post({ type: "progress", loaded, total }),
       alive: () => post({ type: "alive" }),
+      /** Report an engine step while loading, e.g. ctx.step("create-voice-model", { file: "model.onnx" }). */
+      step: (step, details = {}) => post({ type: "progress", ...details, step, engine: true }),
       log: (msg) => post({ type: "log", msg }),
       /** Load the files of the manifest the host named, with progress and "still working" reported. */
       loadFiles: async (o) => (files = await fileStore({ dbName: data.dbName }).load(data.manifestUrl, {
-        onProgress: ({ loaded, total }) => ctx.progress(loaded, total),
-        onStep: ctx.alive,
+        onProgress: (p) => post({ type: "progress", ...p }),
         log: ctx.log,
         ...o,
       })),

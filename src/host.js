@@ -36,6 +36,59 @@ const safely = (fn) => { try { return fn(); } catch { return undefined; } };
 const storageOf = (kind) => safely(() => (kind === "session" ? sessionStorage : localStorage));
 const abortError = () => new DOMException("The operation was aborted.", "AbortError");
 
+/**
+ * Turns the worker's loading steps into what apps show (a stage and one fraction for the whole load, never going
+ * backwards) and what helps debugging (every step, with how long it took).
+ *
+ * Fraction: when downloading, bytes downloaded count for 75% and bytes unpacked for 20%; from the device, unpacking
+ * counts for 90%. Engine steps after the last file move the bar closer to 99%; "ready" is 100%.
+ */
+function loadTracker() {
+  const t0 = performance.now();
+  const timings = [];
+  let files = {}, fraction = 0, filesDone = false, current = null;
+  const elapsed = (now) => Math.round(now - t0);
+  return {
+    /** @returns {{ event: object, newStep: boolean }} */
+    update(p) {
+      const now = performance.now();
+      if (!p.engine) files = p;
+      if (p.step === "file-done" && p.fileIndex === p.files) filesDone = true;
+      const key = `${p.step}|${p.file ?? ""}|${p.part ?? ""}`;
+      const newStep = current?.key !== key;
+      if (newStep) {
+        if (current) current.ms = Math.round(now - current.start);
+        current = { key, start: now, step: p.step, ...(p.file && { file: p.file }), ...(p.part && { part: p.part }), at: elapsed(now) };
+        timings.push(current);
+      }
+      const { downloaded = 0, toDownload = 0, unpacked = 0, toUnpack = 0 } = files;
+      const u = toUnpack ? unpacked / toUnpack : 0;
+      let f = toDownload > 0 ? 0.75 * Math.min(1, downloaded / toDownload) + 0.2 * u : 0.9 * u;
+      if (filesDone && p.engine && newStep) f = Math.max(f, fraction + (0.99 - fraction) / 3);
+      fraction = Math.min(0.99, Math.max(fraction, f));
+      const downloading = toDownload > 0 && downloaded < toDownload;
+      const { engine, type, id, ...details } = p;
+      return {
+        newStep,
+        event: {
+          ...details,
+          stage: downloading ? "downloading" : "preparing",
+          fraction,
+          loaded: downloading ? downloaded : unpacked,
+          total: downloading ? toDownload : toUnpack,
+          ms: elapsed(now),
+        },
+      };
+    },
+    /** Every step with its duration, and the whole load's. */
+    finish() {
+      const now = performance.now();
+      if (current) current.ms = Math.round(now - current.start);
+      return { ms: elapsed(now), timings: timings.map(({ key, start, ...t }) => t) };
+    },
+  };
+}
+
 function unsupported() {
   if (typeof WebAssembly !== "object") return "WebAssembly";
   if (typeof Worker !== "function") return "Web Workers";
@@ -114,17 +167,30 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
             `${this.name} worker ${loading ? "failed to start" : "crashed"}: ${e.message || "unknown error"}`));
         };
         this.setStatus("loading");
+        const tracker = loadTracker();
+        const emit = (event, value) => { for (const h of this.active()) h._emit(event, value); };
         try {
           const result = await this.call({ type: "load", manifestUrl: this.url, dbName: prefix }, {
             stall: this.loadStallMs(),
             onProgress: (p) => {
-              this.setStatus(p.loaded < p.total ? "downloading" : "loading");
-              for (const h of this.active()) h._emit("progress", { loaded: p.loaded, total: p.total });
+              if (!p.step) return;
+              const { event, newStep } = tracker.update(p);
+              if (newStep) {
+                const where = event.file ? ` ${event.file}${event.parts > 1 ? ` part ${event.part}/${event.parts}` : ""}` : "";
+                emit("log", `${(event.ms / 1000).toFixed(2)} s  ${event.step}${where}`);
+              }
+              // until the manifest is read it isn't known whether anything must be downloaded: timed and logged only
+              if (p.step === "manifest") return;
+              this.setStatus(event.stage === "downloading" ? "downloading" : "loading");
+              emit("progress", event);
             },
           });
+          const { ms, timings } = tracker.finish();
           this.setStatus("ready");
+          emit("progress", { stage: "ready", step: "ready", fraction: 1, ms });
+          emit("log", `${(ms / 1000).toFixed(2)} s  ready`);
           this.touch();
-          return { fromCache: true, ...result };
+          return { fromCache: true, ...result, ms, timings };
         } catch (err) {
           if (this.worker) this.kill(err, "not-loaded");
           throw err;
@@ -317,7 +383,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
         this._loaded = true;
         this._emitStatus();
         if (!res.fromCache && this._opts.persistStorage) navigator.storage?.persist?.()?.catch?.(() => {});
-        return { fromCache: !!res.fromCache };
+        return { fromCache: !!res.fromCache, ...(res.timings && { ms: res.ms, timings: res.timings }) };
       } catch (err) {
         this._active = false;
         this._host.users.delete(this);

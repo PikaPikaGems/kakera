@@ -164,55 +164,87 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
     /**
      * Go through the manifest's files in order. For each, `onFile(file, chunks)` gets the file's entry and an async
      * iterable of its unpacked bytes; it should consume them (whatever it leaves is read and dropped).
+     *
+     * `onProgress` is called at every step, and while bytes arrive (at most every 100 ms), with:
+     *   step        "manifest" | "read" (a part from the device) | "download" | "verify" | "store" | "unpack" | "file-done"
+     *   file, fileIndex, files      the file being worked on (1-based index) and how many files there are
+     *   part, parts                 the part of that file (1-based) and how many it has
+     *   downloaded, toDownload      bytes; toDownload counts only the parts not on the device (0 when all are)
+     *   unpacked, toUnpack          bytes handed to onFile so far / in all files
      * @param {string} manifestUrl  absolute URL
      * @param {object} o
      * @param {(file: object, chunks: AsyncIterable<Uint8Array>, manifest: object) => Promise<void>} o.onFile
-     * @param {(p: { loaded: number, total: number }) => void} [o.onProgress]  bytes downloaded (not called when stored)
-     * @param {() => void} [o.onStep]   after each part (a "still working" signal)
+     * @param {(p: object) => void} [o.onProgress]
      * @param {(msg: string) => void} [o.log]
      * @returns {Promise<{ manifest: object, fromCache: boolean, cached: boolean }>}
      *   fromCache: nothing was downloaded; cached: everything is now stored on the device
      */
-    async load(manifestUrl, { onFile, onProgress = () => {}, onStep = () => {}, log = () => {} }) {
+    async load(manifestUrl, { onFile, onProgress = () => {}, log = () => {} }) {
       if (typeof DecompressionStream !== "function") throw codedError("unsupported-browser", "this browser cannot unpack gzip (needs Safari 16.4+ or a recent Chrome/Firefox)");
+      const where = { file: null, fileIndex: 0, files: 0, part: 0, parts: 0 };
+      const counts = { downloaded: 0, toDownload: 0, unpacked: 0, toUnpack: 0 };
+      const report = (step) => onProgress({ step, ...where, ...counts });
+      report("manifest");
       const m = await getManifest(manifestUrl);
       const id = idOf(m);
       const complete = !!(await storage.get(id).catch(() => null));
       const verify = !!globalThis.crypto?.subtle; // missing on plain http:// LAN addresses
       if (!complete && !verify) log("No crypto.subtle (page is not https): skipping checksum verification.");
 
-      let storing = true, downloaded = false, loaded = 0;
-      const total = m.downloadSize;
+      // which parts have to be downloaded (for an honest progress bar, also when some are already stored)
+      const stored = new Set(complete ? [] : await storage.keys().catch(() => []));
+      where.files = m.files.length;
+      counts.toUnpack = m.files.reduce((n, f) => n + f.size, 0);
+      counts.toDownload = complete ? 0 : m.files.flatMap((f) => f.parts).filter((p) => !stored.has(`${id}/${p.file}`)).reduce((n, p) => n + p.size, 0);
+
+      let storing = true, downloaded = false, lastReport = 0;
 
       /** Bytes of one part as on the server: from the device, or downloaded, checked and stored. */
       const partBytes = async ({ file: name, size, sha256 }) => {
         const key = `${id}/${name}`;
-        const stored = await storage.get(key).catch(() => null);
-        if (stored) return new Uint8Array(stored);
-        if (complete) log(`${name} was missing from the device; downloading it again.`);
+        report("read");
+        const fromDevice = await storage.get(key).catch(() => null);
+        if (fromDevice) return new Uint8Array(fromDevice);
+        if (complete) {
+          log(`${name} was missing from the device; downloading it again.`);
+          counts.toDownload += size;
+        }
         downloaded = true;
-        const bytes = await download(new URL(name, manifestUrl), size, (n) => { loaded += n; onProgress({ loaded, total }); });
-        if (verify && (await sha256Hex(bytes)) !== sha256) throw codedError("checksum-mismatch", `${name} is corrupt (checksum mismatch); reload to try again`);
+        report("download");
+        const bytes = await download(new URL(name, manifestUrl), size, (n) => {
+          counts.downloaded += n;
+          const now = Date.now();
+          if (now - lastReport >= 100) { lastReport = now; report("download"); }
+        });
+        report("download"); // the part is complete
+        if (verify) {
+          report("verify");
+          if ((await sha256Hex(bytes)) !== sha256) throw codedError("checksum-mismatch", `${name} is corrupt (checksum mismatch); reload to try again`);
+        }
         if (storing) {
+          report("store");
           try { await storage.put(key, bytes.buffer); }
           catch (e) { storing = false; log(`Could not store the files on this device (${e?.name ?? e}); they will download again next time.`); }
         }
         return bytes;
       };
 
-      for (const file of m.files) {
+      for (const [i, file] of m.files.entries()) {
+        Object.assign(where, { file: file.name, fileIndex: i + 1, part: 0, parts: file.parts.length });
         let written = 0;
         const chunks = (async function* () {
-          for (const part of file.parts) {
+          for (const [j, part] of file.parts.entries()) {
+            where.part = j + 1;
             const bytes = await partBytes(part);
-            if (file.gzip) for await (const c of gunzip(bytes)) { written += c.length; yield c; }
-            else { written += bytes.length; yield bytes; }
-            onStep();
+            report("unpack");
+            if (file.gzip) for await (const c of gunzip(bytes)) { written += c.length; counts.unpacked += c.length; yield c; }
+            else { written += bytes.length; counts.unpacked += bytes.length; yield bytes; }
           }
           if (written !== file.size) throw codedError("checksum-mismatch", `${file.name} unpacked to ${written} bytes, the manifest says ${file.size}`);
         })();
         await onFile(file, chunks, m);
         for await (const _ of chunks) { /* drain anything the consumer left */ }
+        report("file-done");
       }
 
       if (!complete && storing) {

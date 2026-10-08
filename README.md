@@ -34,10 +34,14 @@ const engine = pool.handle({
   createWorker: () => new Worker(new URL("./engine.js", import.meta.url), { type: "module" }),
   idleTimeout: 60_000, stopWhenHidden: true, crashGuard: { retryAfterDays: 7 }, loadStall: 60_000,
 });
-await engine.load();                                       // { fromCache }
+await engine.load();                                       // { fromCache, ms, timings: [{ step, file, part, at, ms }] }
 const audio = await engine.call("speak", { text }, { stall: 20_000, signal });
 engine.status; engine.on("status" | "progress" | "log", fn); engine.info(); engine.unload(); engine.dispose();
 ```
+
+`progress` events: `{ stage: "downloading" | "preparing" | "ready", fraction, loaded, total, step, file, part, parts,
+ms, ... }`: one fraction for the whole load (never goes backwards), a stable `stage` for labels and every `step` for
+debugging. Engines add their own steps with `ctx.step(name, details)`.
 
 Worker side (`engine.js`):
 

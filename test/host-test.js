@@ -47,17 +47,42 @@ async function phase1() {
     assert(i.downloadBytes > 0 && typeof i.downloadMB === "number", "sizes");
   });
 
-  await t("load() downloads: progress and statuses, then ready", async () => {
-    const seen = [];
-    let progress = 0;
-    const off1 = a.on("status", (s) => seen.push(s)), off2 = a.on("progress", () => progress++);
+  await t("load() downloads: statuses, detailed progress, timings, then ready", async () => {
+    const seen = [], events = [], logs = [];
+    const offs = [a.on("status", (s) => seen.push(s)), a.on("progress", (p) => events.push(p)), a.on("log", (m) => logs.push(m))];
     const res = await a.load();
-    off1(); off2();
+    offs.forEach((off) => off());
     eq(res.fromCache, false, "fromCache");
     eq(a.status, "ready", "status");
-    assert(progress > 0, "progress events");
     assert(seen.includes("downloading") && seen.at(-1) === "ready", `statuses ${seen}`);
+    const stages = [...new Set(events.map((e) => e.stage))];
+    eq(stages.join(), "downloading,preparing,ready", "stages in order");
+    const steps = new Set(events.map((e) => e.step));
+    for (const s of ["download", "verify", "store", "unpack", "file-done", "start-engine", "ready"]) assert(steps.has(s), `step ${s} missing (${[...steps]})`);
+    assert(events.every((e, i) => i === 0 || e.fraction >= events[i - 1].fraction), "fraction never goes backwards");
+    eq(events.at(-1).fraction, 1, "ends at 1");
+    const dl = events.filter((e) => e.stage === "downloading");
+    assert(dl.every((e) => e.total > 0 && e.loaded <= e.total), "download bytes");
+    assert(events.some((e) => e.file === "model.bin" && e.parts > 1 && e.part >= 1), "file and part details");
+    assert(res.ms >= 0 && res.timings.length > 5 && res.timings.every((x) => x.step && x.ms >= 0), "timings");
+    eq(res.timings[0].step, "manifest", "first timing");
+    assert(logs.some((m) => /download model\.bin part 1\//.test(m)), `step logs: ${logs.slice(0, 3)}`);
     eq((await a.info()).cached, true, "cached afterwards");
+  });
+
+  await t("loading from the device: preparing only, still a full bar", async () => {
+    const events = [];
+    const p = make();
+    a.unload();
+    const off = p.on("progress", (e) => events.push(e));
+    const res = await p.load();
+    off();
+    eq(res.fromCache, true, "fromCache");
+    eq([...new Set(events.map((e) => e.stage))].join(), "preparing,ready", "stages");
+    assert(events.some((e) => e.step === "read") && !events.some((e) => e.step === "download"), "read, no download");
+    assert(events.some((e) => e.fraction > 0.5 && e.fraction < 1), "bar moves while preparing");
+    p.dispose();
+    await a.load();
   });
 
   await t("calls work; results can transfer buffers", async () => {
