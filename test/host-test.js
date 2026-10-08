@@ -33,6 +33,7 @@ const workers = () => pool.engines().filter((e) => e.worker).length;
 
 async function phase1() {
   localStorage.removeItem(`kakera-test:crashed:${CRASH_KEY}`);
+  localStorage.removeItem(`kakera-test:timings:${CRASH_KEY}`);
   await new Promise((r) => { const q = indexedDB.deleteDatabase("kakera-test"); q.onsuccess = q.onerror = q.onblocked = r; });
   const a = make();
 
@@ -81,6 +82,21 @@ async function phase1() {
     eq([...new Set(events.map((e) => e.stage))].join(), "preparing,ready", "stages");
     assert(events.some((e) => e.step === "read") && !events.some((e) => e.step === "download"), "read, no download");
     assert(events.some((e) => e.fraction > 0.5 && e.fraction < 1), "bar moves while preparing");
+    p.dispose();
+    await a.load();
+  });
+
+  await t("step times are remembered; the next load from the device moves the bar by time", async () => {
+    const saved = JSON.parse(localStorage.getItem(`kakera-test:timings:${CRASH_KEY}`) ?? "null");
+    assert(saved && saved.total > 0 && Object.keys(saved.steps).some((k) => k.startsWith("start-engine")), "profile saved after a load from the device");
+    const events = [];
+    const p = make();
+    a.unload();
+    const off = p.on("progress", (e) => events.push(e));
+    await p.load();
+    off();
+    assert(events.every((e, i) => i === 0 || e.fraction >= events[i - 1].fraction), "never backwards");
+    eq(events.at(-1).fraction, 1, "ends at 1");
     p.dispose();
     await a.load();
   });

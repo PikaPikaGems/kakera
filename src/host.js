@@ -40,51 +40,88 @@ const abortError = () => new DOMException("The operation was aborted.", "AbortEr
  * Turns the worker's loading steps into what apps show (a stage and one fraction for the whole load, never going
  * backwards) and what helps debugging (every step, with how long it took).
  *
- * Fraction: when downloading, bytes downloaded count for 75% and bytes unpacked for 20%; from the device, unpacking
- * counts for 90%. Engine steps after the last file move the bar closer to 99%; "ready" is 100%.
+ * Fraction:
+ *   - downloading: bytes downloaded count for 75%, bytes unpacked for 20%; engine steps after the last file move the
+ *     bar closer to 99%
+ *   - from the device, first time: bytes unpacked count for 90%, then the same
+ *   - from the device, with `profile` (how long each step took in the last load from the device on this device): by
+ *     time, so the bar keeps moving through long steps that report nothing (tick() is called every 200 ms)
+ * "ready" is 100%.
+ * @param {{ total: number, steps: Record<string, number> } | null} profile
  */
-function loadTracker() {
+function loadTracker(profile) {
   const t0 = performance.now();
   const timings = [];
-  let files = {}, fraction = 0, filesDone = false, current = null;
+  let files = {}, fraction = 0, filesDone = false, current = null, last = null, doneMs = 0;
   const elapsed = (now) => Math.round(now - t0);
+  const byTime = () => !!profile && files.toUnpack > 0 && !files.toDownload;
+
+  function compute(now) {
+    const { downloaded = 0, toDownload = 0, unpacked = 0, toUnpack = 0 } = files;
+    let f;
+    if (byTime()) {
+      const inStep = current ? Math.min(now - current.start, profile.steps[current.key] ?? 0) : 0;
+      f = (doneMs + inStep) / profile.total;
+    } else {
+      const u = toUnpack ? unpacked / toUnpack : 0;
+      f = toDownload > 0 ? 0.75 * Math.min(1, downloaded / toDownload) + 0.2 * u : 0.9 * u;
+    }
+    fraction = Math.min(0.99, Math.max(fraction, f));
+  }
+
+  function event(now) {
+    const { downloaded = 0, toDownload = 0, unpacked = 0, toUnpack = 0 } = files;
+    const downloading = toDownload > 0 && downloaded < toDownload;
+    const { engine, type, id, ...details } = last;
+    return {
+      ...details,
+      stage: downloading ? "downloading" : "preparing",
+      fraction,
+      loaded: downloading ? downloaded : unpacked,
+      total: downloading ? toDownload : toUnpack,
+      ms: elapsed(now),
+    };
+  }
+
   return {
     /** @returns {{ event: object, newStep: boolean }} */
     update(p) {
       const now = performance.now();
+      last = p;
       if (!p.engine) files = p;
       if (p.step === "file-done" && p.fileIndex === p.files) filesDone = true;
       const key = `${p.step}|${p.file ?? ""}|${p.part ?? ""}`;
       const newStep = current?.key !== key;
       if (newStep) {
-        if (current) current.ms = Math.round(now - current.start);
+        if (current) {
+          current.ms = Math.round(now - current.start);
+          doneMs += profile?.steps[current.key] ?? 0;
+        }
         current = { key, start: now, step: p.step, ...(p.file && { file: p.file }), ...(p.part && { part: p.part }), at: elapsed(now) };
         timings.push(current);
       }
-      const { downloaded = 0, toDownload = 0, unpacked = 0, toUnpack = 0 } = files;
-      const u = toUnpack ? unpacked / toUnpack : 0;
-      let f = toDownload > 0 ? 0.75 * Math.min(1, downloaded / toDownload) + 0.2 * u : 0.9 * u;
-      if (filesDone && p.engine && newStep) f = Math.max(f, fraction + (0.99 - fraction) / 3);
-      fraction = Math.min(0.99, Math.max(fraction, f));
-      const downloading = toDownload > 0 && downloaded < toDownload;
-      const { engine, type, id, ...details } = p;
-      return {
-        newStep,
-        event: {
-          ...details,
-          stage: downloading ? "downloading" : "preparing",
-          fraction,
-          loaded: downloading ? downloaded : unpacked,
-          total: downloading ? toDownload : toUnpack,
-          ms: elapsed(now),
-        },
-      };
+      compute(now);
+      if (!byTime() && filesDone && p.engine && newStep) fraction = Math.min(0.99, fraction + (0.99 - fraction) / 3);
+      return { newStep, event: event(now) };
+    },
+    /** While a step runs: a new event when the time-based bar has moved, else null. */
+    tick() {
+      if (!last || !byTime()) return null;
+      const before = fraction;
+      compute(performance.now());
+      return fraction - before >= 0.005 ? event(performance.now()) : null;
     },
     /** Every step with its duration, and the whole load's. */
     finish() {
       const now = performance.now();
       if (current) current.ms = Math.round(now - current.start);
-      return { ms: elapsed(now), timings: timings.map(({ key, start, ...t }) => t) };
+      const steps = {};
+      for (const t of timings) steps[t.key] = (steps[t.key] ?? 0) + t.ms;
+      return {
+        ms: elapsed(now),
+        timings: timings.map(({ key, start, ...t }) => t),
+        profile: { total: Math.max(1, timings.reduce((n, t) => n + t.ms, 0)), steps },
+      };
     },
   };
 }
@@ -102,7 +139,7 @@ function unsupported() {
  *   prefix: the package's name; used for storage keys and the IndexedDB database
  */
 export function createPool({ prefix, ErrorClass = KakeraError }) {
-  const LOADING = `${prefix}:loading:`, CRASHED = `${prefix}:crashed:`;
+  const LOADING = `${prefix}:loading:`, CRASHED = `${prefix}:crashed:`, PROFILE = `${prefix}:timings:`;
 
   // A marker left over from the previous page in this tab = that load crashed the tab.
   safely(() => {
@@ -167,8 +204,10 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
             `${this.name} worker ${loading ? "failed to start" : "crashed"}: ${e.message || "unknown error"}`));
         };
         this.setStatus("loading");
-        const tracker = loadTracker();
+        const profileKey = `${PROFILE}${this.key}`;
+        const tracker = loadTracker(safely(() => JSON.parse(storageOf("local").getItem(profileKey))) ?? null);
         const emit = (event, value) => { for (const h of this.active()) h._emit(event, value); };
+        const ticker = setInterval(() => { const e = tracker.tick(); if (e) emit("progress", e); }, 200);
         try {
           const result = await this.call({ type: "load", manifestUrl: this.url, dbName: prefix }, {
             stall: this.loadStallMs(),
@@ -185,7 +224,10 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
               emit("progress", event);
             },
           });
-          const { ms, timings } = tracker.finish();
+          clearInterval(ticker);
+          const { ms, timings, profile } = tracker.finish();
+          // how long each step takes on this device, for a bar that moves by time next time (loads from the device only)
+          if (result?.fromCache !== false) safely(() => storageOf("local").setItem(profileKey, JSON.stringify(profile)));
           this.setStatus("ready");
           emit("progress", { stage: "ready", step: "ready", fraction: 1, ms });
           emit("log", `${(ms / 1000).toFixed(2)} s  ready`);
@@ -195,6 +237,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
           if (this.worker) this.kill(err, "not-loaded");
           throw err;
         } finally {
+          clearInterval(ticker);
           clearLoading(this.key);
           this.loading = null;
         }
