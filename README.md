@@ -1,5 +1,8 @@
 # kakera
 
+> [!WARNING]
+> This project is experimental. Use it at your own risk.
+
 Shared plumbing for [wakachi](https://github.com/PikaPikaGems/wakachi) (Japanese furigana and word analysis) and
 [yomiage](https://github.com/PikaPikaGems/yomiage) (Japanese text-to-speech): loading big files in the browser, on
 phones, without trouble. *kakera* (欠片) means "fragments, pieces".
