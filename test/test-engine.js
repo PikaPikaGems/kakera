@@ -8,10 +8,10 @@ let sizes = {};
 
 serveEngine({
   async load(msg, ctx) {
-    const res = await ctx.loadFiles({
+    await ctx.loadFiles({
       onFile: async (file, chunks) => { sizes[file.name] = (await collect(chunks, file.size)).length; },
     });
-    return { fromCache: res.fromCache, sizes };
+    return { sizes }; // fromCache is added by serveEngine
   },
   calls: {
     echo: async ({ value }) => ({ value, sizes }),

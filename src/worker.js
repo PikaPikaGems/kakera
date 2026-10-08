@@ -2,7 +2,7 @@
 // working" signals and errors in the form the host expects.
 //
 //   serveEngine({
-//     load: async (msg, ctx) => { await ctx.loadFiles({ onFile }); ...; return anything },
+//     load: async (msg, ctx) => { await ctx.loadFiles({ onFile }); ...; return an object (or nothing) },
 //     calls: { analyze: async (msg, ctx) => { ...; ctx.alive(); return result } },
 //   });
 //
@@ -27,22 +27,24 @@ export function serveEngine({ load, calls }) {
   self.onmessage = async ({ data }) => {
     const { id, type } = data;
     const post = (msg, transfer) => self.postMessage({ id, ...msg }, transfer ?? []);
+    let files = null; // what ctx.loadFiles() found: tells the page whether anything was downloaded
     const ctx = {
       progress: (loaded, total) => post({ type: "progress", loaded, total }),
       alive: () => post({ type: "alive" }),
       log: (msg) => post({ type: "log", msg }),
       /** Load the files of the manifest the host named, with progress and "still working" reported. */
-      loadFiles: (o) => fileStore({ dbName: data.dbName }).load(data.manifestUrl, {
+      loadFiles: async (o) => (files = await fileStore({ dbName: data.dbName }).load(data.manifestUrl, {
         onProgress: ({ loaded, total }) => ctx.progress(loaded, total),
         onStep: ctx.alive,
         log: ctx.log,
         ...o,
-      }),
+      })),
     };
     try {
       let result;
       if (type === "load") {
-        result = await load(data, ctx);
+        const engine = await load(data, ctx);
+        result = { fromCache: files?.fromCache ?? true, ...engine };
         ready = true;
       } else {
         if (!ready) throw codedError("not-loaded", "engine not loaded");
