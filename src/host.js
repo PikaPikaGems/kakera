@@ -22,6 +22,7 @@
 //   - cancelling with AbortSignal; dispose() drops a handle's calls from the worker too
 import { KakeraError } from "./errors.js";
 import { fileStore } from "./files.js";
+import { VERSION as KAKERA_VERSION } from "./version.js";
 
 export const DEFAULTS = Object.freeze({
   filesUrl: null, // required from the package (e.g. "/yomiage/")
@@ -35,6 +36,30 @@ export const DEFAULTS = Object.freeze({
 const safely = (fn) => { try { return fn(); } catch { return undefined; } };
 const storageOf = (kind) => safely(() => (kind === "session" ? sessionStorage : localStorage));
 const abortError = () => new DOMException("The operation was aborted.", "AbortError");
+const redactUrls = (value) => String(value).replace(/https?:\/\/[^\s"'<>]+/g, (value) => {
+  const trailing = value.match(/[),.;]+$/)?.[0] ?? "";
+  const url = trailing ? value.slice(0, -trailing.length) : value;
+  return `${safeUrl(url)}${trailing}`;
+});
+const errorDetails = (err) => {
+  if (!err) return null;
+  const out = [];
+  const seen = new Set();
+  for (let current = err, depth = 0; current && depth < 5 && !seen.has(current); current = current.cause, depth++) {
+    if (typeof current === "object") seen.add(current);
+    out.push({
+      ...(current.code != null && { code: String(current.code) }),
+      name: String(current.name ?? "Error"),
+      message: redactUrls(current.message ?? current),
+    });
+  }
+  return out;
+};
+const safeUrl = (url) => {
+  try { const u = new URL(url); u.username = ""; u.password = ""; u.search = ""; u.hash = ""; return u.href; }
+  catch { return "unknown"; }
+};
+const isoDate = (time) => { try { return new Date(time).toISOString(); } catch { return "unknown"; } };
 
 /**
  * Turns the worker's loading steps into what apps show (a stage and one fraction for the whole load, never going
@@ -209,6 +234,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
       this.users = new Set();
       this.idleTimer = null;
       this.stopWhenDone = false; // the page went hidden during a call: stop once nothing is pending
+      this.lastLoad = null;
     }
 
     active() { return [...this.users].filter((h) => h._active); }
@@ -231,8 +257,13 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
     load() {
       if (this.status === "ready") return Promise.resolve({ fromCache: true });
       this.loading ??= (async () => {
+        this.lastLoad = { startedAt: Date.now(), status: "loading", log: [], timings: [] };
         markLoading(this.key);
-        this.worker = this.createWorker();
+        try { this.worker = this.createWorker(); }
+        catch (err) {
+          this.lastLoad = { ...this.lastLoad, status: "failed", finishedAt: Date.now(), error: errorDetails(err) };
+          throw err;
+        }
         this.worker.onmessage = ({ data }) => this.onMessage(data);
         this.worker.onerror = (e) => {
           e.preventDefault?.();
@@ -243,7 +274,10 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
         this.setStatus("loading");
         const profileKey = `${PROFILE}${this.key}`;
         const tracker = loadTracker(safely(() => JSON.parse(storageOf("local").getItem(profileKey))) ?? null);
-        const emit = (event, value) => { for (const h of this.active()) h._emit(event, value); };
+        const emit = (event, value) => {
+          if (event === "log") this.lastLoad?.log.push(String(value));
+          for (const h of this.active()) h._emit(event, value);
+        };
         const ticker = setInterval(() => { const e = tracker.tick(); if (e) emit("progress", e); }, 200);
         try {
           const result = await this.call({ type: "load", manifestUrl: this.url, dbName: prefix }, {
@@ -263,6 +297,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
           });
           clearInterval(ticker);
           const { ms, timings, profile } = tracker.finish();
+          this.lastLoad = { ...this.lastLoad, status: "ready", finishedAt: Date.now(), ms, timings };
           // how long each step takes on this device, for a bar that moves by time next time (loads from the device only)
           if (result?.fromCache !== false) safely(() => storageOf("local").setItem(profileKey, JSON.stringify(profile)));
           this.setStatus("ready");
@@ -271,6 +306,8 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
           this.touch();
           return { fromCache: true, ...result, ms, timings };
         } catch (err) {
+          const finished = tracker.finish();
+          this.lastLoad = { ...this.lastLoad, status: "failed", finishedAt: Date.now(), ...finished, error: errorDetails(err) };
           if (this.worker) this.kill(err, "not-loaded");
           throw err;
         } finally {
@@ -399,6 +436,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
       this._calls = new Set();
       this._disposeCtrl = new AbortController();
       this._listeners = new Map();
+      this._lastError = null;
       this._lastStatus = this.status;
       this._files = fileStore({ dbName: prefix });
     }
@@ -445,6 +483,61 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
       return { cached, downloadBytes, downloadMB: Math.round(downloadBytes / 1e6) };
     }
 
+    /** A plain-text report with device and load details. Never includes engine call payloads. */
+    async debugReport({ packageName = "unknown", packageVersion = "unknown" } = {}) {
+      try {
+        let files;
+        try { files = await this._files.diagnostics(this._host.url); }
+        catch (err) { files = { error: errorDetails(err) }; }
+        let storage = { estimate: "unknown", persisted: "unknown" };
+        try {
+          const estimate = await navigator.storage?.estimate?.();
+          if (estimate) storage.estimate = { usage: estimate.usage ?? null, quota: estimate.quota ?? null };
+        } catch { /* unsupported or blocked */ }
+        try {
+          const persisted = await navigator.storage?.persisted?.();
+          if (typeof persisted === "boolean") storage.persisted = persisted;
+        } catch { /* unsupported or blocked */ }
+        const crashAt = crashedAt(this._host.key);
+        const retryDays = this._opts.crashGuard?.retryAfterDays;
+        const report = {
+          package: { name: packageName, version: packageVersion },
+          kakeraVersion: KAKERA_VERSION,
+          generatedAt: new Date().toISOString(),
+          browser: {
+            userAgent: safely(() => navigator.userAgent) ?? "unknown",
+            deviceMemoryGB: safely(() => navigator.deviceMemory) ?? "unknown",
+            crossOriginIsolated: typeof crossOriginIsolated === "boolean" ? crossOriginIsolated : "unknown",
+          },
+          filesUrl: safeUrl(this._host.url.replace(/manifest\.json(?:\?.*)?$/, "")),
+          manifest: files?.manifest ?? "unknown",
+          manifestMatchesPackage: files?.manifest?.version == null ? "unknown" : files.manifest.version === packageVersion,
+          files: files?.files ?? "unknown",
+          filesError: files?.error ?? undefined,
+          status: this.status,
+          lastError: this._lastError ?? "none",
+          storage,
+          crashGuard: {
+            enabled: !!this._opts.crashGuard,
+            recordedAt: crashAt ? isoDate(crashAt) : "none",
+            blockedUntil: crashAt && retryDays ? isoDate(crashAt + retryDays * 86_400_000) : "none",
+          },
+          lastLoad: this._host.lastLoad ? {
+            startedAt: isoDate(this._host.lastLoad.startedAt),
+            finishedAt: this._host.lastLoad.finishedAt ? isoDate(this._host.lastLoad.finishedAt) : "in progress",
+            status: this._host.lastLoad.status,
+            ms: this._host.lastLoad.ms ?? "unknown",
+            log: this._host.lastLoad.log,
+            timings: this._host.lastLoad.timings ?? [],
+            ...(this._host.lastLoad.error && { error: this._host.lastLoad.error }),
+          } : "none",
+        };
+        return `Debug report\n${JSON.stringify(report, null, 2)}`;
+      } catch {
+        return "Debug report\nReport details unavailable.";
+      }
+    }
+
     load() {
       if (this._loaded && this._active && this._host.status === "ready") return Promise.resolve({ fromCache: true });
       this._loadPromise ??= this._load().finally(() => { this._loadPromise = null; });
@@ -453,10 +546,14 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
 
     async _load() {
       const missing = unsupported();
-      if (missing) { this._fail("error"); throw new ErrorClass("unsupported-browser", `this browser lacks ${missing}`); }
+      if (missing) {
+        const err = new ErrorClass("unsupported-browser", `this browser lacks ${missing}`);
+        this._lastError = errorDetails(err); this._fail("error"); throw err;
+      }
       if (this._crashed()) {
         this._fail("unavailable");
-        throw new ErrorClass("unavailable", `loading ${this._opts.name} crashed this tab recently; not loading it again yet (resetCrashGuard() to retry)`);
+        const err = new ErrorClass("unavailable", `loading ${this._opts.name} crashed this tab recently; not loading it again yet (resetCrashGuard() to retry)`);
+        this._lastError = errorDetails(err); throw err;
       }
       this._attach();
       try {
@@ -466,6 +563,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
         if (!res.fromCache && this._opts.persistStorage) navigator.storage?.persist?.()?.catch?.(() => {});
         return { fromCache: !!res.fromCache, ...(res.timings && { ms: res.ms, timings: res.timings }) };
       } catch (err) {
+        this._lastError = errorDetails(err);
         this._active = false;
         this._host.users.delete(this);
         this._host.release();
