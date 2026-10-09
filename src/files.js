@@ -155,6 +155,27 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
       return { cached, downloadBytes: m.downloadSize, manifest: m };
     },
 
+    /** Describe which manifest parts are stored without reading their contents. */
+    async diagnostics(manifestUrl) {
+      const manifest = await getManifest(manifestUrl);
+      const id = idOf(manifest);
+      let keys = null, complete = "unknown";
+      try { keys = new Set(await storage.keys()); } catch { /* storage may be blocked */ }
+      try { complete = !!(await storage.get(id)); } catch { /* storage may be blocked */ }
+      const files = manifest.files.map((file) => {
+        const parts = file.parts.map((part) => ({
+          file: part.file,
+          cached: keys ? keys.has(`${id}/${part.file}`) : "unknown",
+        }));
+        return { name: file.name, parts };
+      });
+      return {
+        manifest: { name: manifest.name, version: manifest.version, format: manifest.format },
+        cached: complete,
+        files,
+      };
+    },
+
     /** Delete everything stored for the manifest's name (all versions). */
     async clear(manifestUrl) {
       const m = await getManifest(manifestUrl);

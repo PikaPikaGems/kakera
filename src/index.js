@@ -2,3 +2,4 @@
 export { createPool, startWorker, DEFAULTS } from "./host.js";
 export { KakeraError } from "./errors.js";
 export { collect, fileStore, indexedDbStorage, memoryStorage, MANIFEST_FORMAT } from "./files.js";
+export { VERSION } from "./version.js";

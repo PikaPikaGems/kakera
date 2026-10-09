@@ -77,6 +77,10 @@ test("first load downloads, checks and stores; data arrives in pieces", async ()
   assert.equal(lastProgress.loaded, lastProgress.total);
   assert.equal(res.manifest.meta.hello, "world");
   assert.equal((await store.info(`${base}manifest.json`)).cached, true);
+  const diagnostics = await store.diagnostics(`${base}manifest.json`);
+  assert.equal(diagnostics.manifest.version, res.manifest.version);
+  assert.equal(diagnostics.cached, true);
+  assert.ok(diagnostics.files.every((file) => file.parts.every((part) => part.cached)));
 });
 
 test("second load uses the device only, and works offline", async () => {
