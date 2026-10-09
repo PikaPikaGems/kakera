@@ -34,7 +34,8 @@ const pool = createPool({ prefix: "yomiage", ErrorClass: VoiceError });
 const engine = pool.handle({
   name: "tsukuyomi",
   filesUrl: "/yomiage/",   // where manifest.json and the parts are
-  createWorker: () => new Worker(new URL("./engine.js", import.meta.url), { type: "module" }),
+  workerUrl: "/yomiage/engine.js",   // may be on another site (it then needs CORS headers); or createWorker: () => new Worker(...)
+  missingHint: 'run "yomiage copy-files"', // added to the error when the worker file is missing
   idleTimeout: 60_000, stopWhenHidden: true, crashGuard: { retryAfterDays: 7 }, loadStall: 60_000,
 });
 await engine.load();                                       // { fromCache, ms, timings: [{ step, file, part, at, ms }] }
@@ -67,6 +68,7 @@ Node side (building the files): `kakera split --out <dir> --name <name> <file>..
 npm test                        # Node: splitting, loading, checks, storage, offline, versions
 node test/make-fixtures.mjs     # then serve this folder and open test/host.html
 python3 -m http.server 8092     #   http://127.0.0.1:8092/test/host.html  (worker host, incl. a simulated crash)
+python3 test/serve-cors.py 8099 <dir>   # a second origin with CORS headers, for testing files/workers on another site
 ```
 
 ## Licence

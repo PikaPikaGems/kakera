@@ -2,7 +2,7 @@
 // protections phones need. Ported from jp-tts-playground's jp-analyzer, where it was tested in the browser.
 //
 //   const pool = createPool({ prefix: "yomiage", ErrorClass: VoiceError });
-//   const h = pool.handle({ name: "tsukuyomi", filesUrl, createWorker, ...options });
+//   const h = pool.handle({ name: "tsukuyomi", filesUrl, workerUrl, ...options });   (or createWorker instead of workerUrl)
 //   await h.load();
 //   const result = await h.call("speak", { text }, { stall: 20_000, signal });
 //
@@ -124,6 +124,43 @@ function loadTracker(profile) {
       };
     },
   };
+}
+
+/**
+ * Start a module worker from `url`, also when it's on another site. Browsers refuse `new Worker(url)` for another
+ * origin, so then the worker starts from a one-line same-origin script that imports the real one; the other site must
+ * send CORS headers (GitHub Pages and CDNs do).
+ */
+export function startWorker(url) {
+  const u = new URL(url, location.href);
+  if (u.origin === location.origin) return new Worker(u, { type: "module" });
+  const blobUrl = URL.createObjectURL(new Blob([`import ${JSON.stringify(u.href)};`], { type: "text/javascript" }));
+  const worker = new Worker(blobUrl, { type: "module" });
+  const revoke = () => URL.revokeObjectURL(blobUrl); // once the worker has started (or failed to)
+  worker.addEventListener("message", revoke, { once: true });
+  worker.addEventListener("error", revoke, { once: true });
+  return worker;
+}
+
+/**
+ * Browsers say nothing useful when a worker's script can't be loaded ("unknown error"), so find out why: the file is
+ * missing (`missingHint` says how to put it there), the server can't be reached, or (another site) it sends no CORS
+ * headers.
+ */
+async function explainStartFailure(workerUrl, err, ErrorClass, missingHint) {
+  const url = new URL(workerUrl, location.href);
+  const otherSite = url.origin !== location.origin;
+  let res;
+  try {
+    res = await fetch(url, { method: "HEAD", cache: "no-store" });
+  } catch {
+    return new ErrorClass("download-failed", otherSite
+      ? `could not load ${url.href}: is the site reachable, and does it send CORS headers (Access-Control-Allow-Origin)?`
+      : `could not reach ${url.href} (is the server running, is the device online?)`, { cause: err });
+  }
+  if (res.status === 404) return new ErrorClass("engine-failed", `${url.href.replace(/\?.*/, "")} is missing${missingHint ? `: ${missingHint}` : ""}`, { cause: err });
+  if (!res.ok) return new ErrorClass("download-failed", `${url.href}: ${res.status} ${res.statusText}`, { cause: err });
+  return err;
 }
 
 function unsupported() {
@@ -347,7 +384,8 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
   class Handle {
     constructor(options) {
       const o = { ...DEFAULTS, ...options };
-      if (!o.name || !o.filesUrl || typeof o.createWorker !== "function") throw new TypeError("handle(): name, filesUrl and createWorker are required");
+      if (o.workerUrl) o.createWorker = () => startWorker(o.workerUrl);
+      if (!o.name || !o.filesUrl || typeof o.createWorker !== "function") throw new TypeError("handle(): name, filesUrl and workerUrl (or createWorker) are required");
       o.crashGuard = o.crashGuard === false ? false : { ...DEFAULTS.crashGuard, ...o.crashGuard };
       this._opts = o;
       const manifestUrl = new URL("manifest.json", new URL(o.filesUrl.endsWith("/") ? o.filesUrl : `${o.filesUrl}/`, location.href)).href;
@@ -432,7 +470,9 @@ export function createPool({ prefix, ErrorClass = KakeraError }) {
         this._host.users.delete(this);
         this._host.release();
         this._fail("error");
-        throw err;
+        const { workerUrl, missingHint } = this._opts;
+        throw workerUrl && err.code === "engine-failed" && /failed to start/.test(err.message)
+          ? await explainStartFailure(workerUrl, err, ErrorClass, missingHint) : err;
       }
     }
     _fail(status) { this._own = status; this._emitStatus(); }
