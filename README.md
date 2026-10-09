@@ -59,6 +59,10 @@ serveEngine({
 });
 ```
 
+Programs with a big built-in dictionary (`kakera/wasm`): `splitWasm()` ships the dictionary as its own file, and
+`segmentWriter()` / `initWithData()` write it straight into the program's memory, so browsers don't keep extra copies
+(Safari kept two to three). wakachi uses it for Sudachi, yomiage for its phonemizer.
+
 Node side (building the files): `kakera split --out <dir> --name <name> <file>...`, or `splitFile()` and
 `writeManifest()` from `kakera/split`.
 

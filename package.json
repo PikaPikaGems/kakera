@@ -10,7 +10,8 @@
     "./worker": "./src/worker.js",
     "./files": "./src/files.js",
     "./split": "./src/split.js",
-    "./errors": "./src/errors.js"
+    "./errors": "./src/errors.js",
+    "./wasm": "./src/wasm.js"
   },
   "bin": {
     "kakera": "./bin/kakera.mjs"
