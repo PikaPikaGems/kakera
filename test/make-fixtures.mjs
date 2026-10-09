@@ -1,6 +1,6 @@
 // Writes test/fixtures/ (split files + manifest) for test/host.html:  node test/make-fixtures.mjs
 import crypto from "node:crypto";
-import { splitFile, writeManifest } from "../src/split.js";
+import { splitFile, writeManifest } from "../dist/split.js";
 
 const outDir = new URL("./fixtures/", import.meta.url).pathname;
 const PART = 64 * 1024;

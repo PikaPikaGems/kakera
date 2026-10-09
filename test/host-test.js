@@ -1,5 +1,5 @@
 // Browser tests for createPool / handles (test/host.html). Results on the page and in window.__results.
-import { createPool, KakeraError } from "../src/index.js";
+import { createPool, KakeraError } from "../dist/index.js";
 
 class TestError extends KakeraError {}
 const pool = createPool({ prefix: "kakera-test", ErrorClass: TestError });

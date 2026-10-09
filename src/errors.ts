@@ -14,12 +14,13 @@
 //   worker-crashed       the worker died after loading
 
 export class KakeraError extends Error {
+  readonly code: string;
   /**
    * @param {string} code
    * @param {string} message
    * @param {{ cause?: unknown }} [options]
    */
-  constructor(code, message, options = {}) {
+  constructor(code: string, message: string, options: ErrorOptions = {}) {
     super(message, "cause" in options ? { cause: options.cause } : undefined);
     this.name = new.target.name;
     this.code = code;
@@ -27,12 +28,18 @@ export class KakeraError extends Error {
 }
 
 /** A plain Error with a code, for code that runs in workers (the code survives postMessage as data). */
-export const codedError = (code, message) => Object.assign(new Error(message), { code });
+export const codedError = (code: string, message: string) => Object.assign(new Error(message), { code });
 
 /** Best guess at a code for an error thrown inside an engine. */
-export function errorCode(err) {
-  if (err?.code) return err.code;
-  const msg = String(err?.message ?? err);
+export function errorCode(err: unknown): string {
+  const details = errorFields(err);
+  if (typeof details.code === "string" && details.code) return details.code;
+  const msg = String(details.message ?? err);
   if (err instanceof RangeError || /out of memory|allocation/i.test(msg)) return "out-of-memory";
   return "engine-failed";
+}
+
+/** Read fields at an error boundary without assuming that thrown values are Error instances. */
+export function errorFields(value: unknown): { code?: unknown; message?: unknown; name?: unknown; cause?: unknown } {
+  return value != null && (typeof value === "object" || typeof value === "function") ? value : {};
 }

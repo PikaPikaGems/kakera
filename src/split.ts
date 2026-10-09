@@ -1,3 +1,4 @@
+import type { Manifest, ManifestFile } from "./types.js";
 // Node only: cut big files into parts that any static host accepts, plus a manifest.json for files.js.
 // GitHub rejects files over 100 MB and Cloudflare Pages over 25 MiB, so parts are at most 20 MiB *before*
 // compression. Each part is gzipped on its own (so it can be checked and unpacked alone), unless gzip saves less
@@ -11,7 +12,7 @@ import { MANIFEST_FORMAT } from "./files.js";
 export const DEFAULT_PART_BYTES = 20 * 1024 * 1024;
 export const HOST_LIMIT_BYTES = 25 * 1024 * 1024; // Cloudflare Pages, the strictest host we target
 
-const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
+const sha256 = (buf: Uint8Array) => crypto.createHash("sha256").update(buf).digest("hex");
 
 /**
  * Write `bytes` as parts into `outDir`.
@@ -19,7 +20,7 @@ const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
  * @param {{ name: string, outDir: string, partBytes?: number, gzip?: boolean | "auto" }} o
  * @returns {{ name: string, size: number, gzip: boolean, parts: { file: string, size: number, rawSize: number, sha256: string }[] }}
  */
-export function splitFile(bytes, { name, outDir, partBytes = DEFAULT_PART_BYTES, gzip = "auto" }) {
+export function splitFile(bytes: Uint8Array, { name, outDir, partBytes = DEFAULT_PART_BYTES, gzip = "auto" }: { name: string; outDir: string; partBytes?: number; gzip?: boolean | "auto" }): ManifestFile {
   if (!/^[\w.-]+$/.test(name)) throw new Error(`file name "${name}" may only contain letters, digits, ".", "_" and "-"`);
   const pieces = [];
   for (let i = 0; i < bytes.length || i === 0; i += partBytes) pieces.push(bytes.subarray(i, i + partBytes));
@@ -44,7 +45,7 @@ export function splitFile(bytes, { name, outDir, partBytes = DEFAULT_PART_BYTES,
  * @param {{ name: string, version: string, files: object[], meta?: object }} o
  *   name: what the files are (also the storage key prefix); version: changes whenever the files change
  */
-export function writeManifest(outDir, { name, version, files, meta }) {
+export function writeManifest(outDir: string, { name, version, files, meta }: { name: string; version: string; files: ManifestFile[]; meta?: Record<string, unknown> }): Manifest {
   const manifest = {
     format: MANIFEST_FORMAT,
     name,
@@ -58,7 +59,7 @@ export function writeManifest(outDir, { name, version, files, meta }) {
 }
 
 /** A version string that changes whenever any of the given buffers changes. */
-export const contentVersion = (...buffers) => {
+export const contentVersion = (...buffers: Uint8Array[]) => {
   const h = crypto.createHash("sha256");
   for (const b of buffers) h.update(b);
   return h.digest("hex").slice(0, 12);

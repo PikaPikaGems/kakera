@@ -7,7 +7,7 @@
 // manifest.json for kakera's loader. --version defaults to a hash of the files' contents.
 import fs from "node:fs";
 import path from "node:path";
-import { contentVersion, splitFile, writeManifest } from "../src/split.js";
+import { contentVersion, splitFile, writeManifest } from "../dist/split.js";
 
 const USAGE = "usage: kakera split --out <dir> --name <name> [--version <v>] [--part-size <MB>] [--gzip auto|yes|no] <file>...";
 const die = (msg) => { console.error(`kakera: ${msg}`); process.exit(1); };

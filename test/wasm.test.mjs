@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { initWithData, segmentWriter, splitWasm } from "../src/wasm.js";
+import { initWithData, segmentWriter, splitWasm } from "../dist/wasm.js";
 
 // A tiny program: one memory page (exported as "memory"), two data segments ("abc" at 16, "xy" at 100), and a
 // `read(i)` function returning the byte at i.

@@ -6,17 +6,49 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.js",
-    "./worker": "./src/worker.js",
-    "./files": "./src/files.js",
-    "./split": "./src/split.js",
-    "./errors": "./src/errors.js",
-    "./wasm": "./src/wasm.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js",
+      "default": "./dist/worker.js"
+    },
+    "./files": {
+      "types": "./dist/files.d.ts",
+      "import": "./dist/files.js",
+      "default": "./dist/files.js"
+    },
+    "./split": {
+      "types": "./dist/split.d.ts",
+      "import": "./dist/split.js",
+      "default": "./dist/split.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js",
+      "default": "./dist/errors.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "import": "./dist/wasm.js",
+      "default": "./dist/wasm.js"
+    }
   },
   "bin": {
     "kakera": "./bin/kakera.mjs"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test:types": "tsc -p test/types",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^22.0.0"
   }
 }
