@@ -1,7 +1,7 @@
 // A small engine for test/host.html: loads the fixture files through kakera, then answers test calls.
-import { codedError } from "../src/errors.js";
-import { collect } from "../src/files.js";
-import { serveEngine, withTransfer } from "../src/worker.js";
+import { codedError } from "../dist/errors.js";
+import { collect } from "../dist/files.js";
+import { serveEngine, withTransfer } from "../dist/worker.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let sizes = {};

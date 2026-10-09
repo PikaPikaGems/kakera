@@ -66,9 +66,20 @@ Programs with a big built-in dictionary (`kakera/wasm`): `splitWasm()` ships the
 Node side (building the files): `kakera split --out <dir> --name <name> <file>...`, or `splitFile()` and
 `writeManifest()` from `kakera/split`.
 
+## Development
+
+Use Node 22 or newer. Source code is TypeScript with strict checking. `npm ci` installs the build tools and runs
+`prepare`, which builds JavaScript and declarations into `dist/`. After editing `src/`, run `npm run build`.
+The generated `.d.ts` files come from the source; do not edit them by hand.
+
+Before building wakachi or yomiage from sibling checkouts, run `npm ci` in kakera first. Both packages bundle the
+built JavaScript. Their apps do not need TypeScript or a separate kakera installation.
+
 ## Tests
 
 ```bash
+npm ci                          # install tools and build dist/
+npm run test:types              # check all package exports and typed usage
 npm test                        # Node: splitting, loading, checks, storage, offline, versions
 node test/make-fixtures.mjs     # then serve this folder and open test/host.html
 python3 -m http.server 8092     #   http://127.0.0.1:8092/test/host.html  (worker host, incl. a simulated crash)

@@ -11,9 +11,12 @@
 // initWithData() does it for a wasm-bindgen program whose start code needs the data.
 import { codedError } from "./errors.js";
 
+import type { ByteChunks } from "./types.js";
+export interface DataSegment { offset: number; length: number }
+
 const SECTION = { start: 8, data: 11, dataCount: 12 };
 
-function leb(buf, i) {
+function leb(buf: Uint8Array, i: number): [number, number] {
   let result = 0, shift = 0, byte;
   do {
     byte = buf[i++];
@@ -31,7 +34,7 @@ function leb(buf, i) {
  * @param {Uint8Array} wasm
  * @returns {{ code: Uint8Array, segments: { offset: number, bytes: Uint8Array }[] }}
  */
-export function splitWasm(wasm) {
+export function splitWasm(wasm: Uint8Array) {
   if (wasm[0] !== 0 || wasm[1] !== 0x61 || wasm[2] !== 0x73 || wasm[3] !== 0x6d) throw new Error("not a wasm file");
   const kept = [wasm.subarray(0, 8)];
   const segments = [];
@@ -73,12 +76,12 @@ export function splitWasm(wasm) {
  * @param {WebAssembly.Memory} memory
  * @param {{ offset: number, length: number }[]} segments
  */
-export function segmentWriter(memory, segments) {
+export function segmentWriter(memory: WebAssembly.Memory, segments: DataSegment[]) {
   const end = Math.max(0, ...segments.map((s) => s.offset + s.length));
   if (memory.buffer.byteLength < end) memory.grow(Math.ceil((end - memory.buffer.byteLength) / 65536));
   let seg = 0, pos = 0;
   while (segments[seg]?.length === 0) seg++;
-  const write = (chunk) => {
+  const write = (chunk: Uint8Array) => {
     let c = 0;
     while (c < chunk.length) {
       const s = segments[seg];
@@ -102,12 +105,12 @@ export function segmentWriter(memory, segments) {
  * Only the instantiation of this program is touched: other code may instantiate other programs meanwhile.
  * @returns whatever `init` returns
  */
-export async function initWithData(init, code, segments, chunks) {
+export async function initWithData<T>(init: (options: { module_or_path: WebAssembly.Module }) => T | Promise<T>, code: BufferSource | WebAssembly.Module, segments: DataSegment[], chunks: ByteChunks): Promise<T> {
   const module = code instanceof WebAssembly.Module ? code : await WebAssembly.compile(code);
   const real = WebAssembly.instantiate;
   let written = false;
-  WebAssembly.instantiate = async function (source, ...rest) {
-    const result = await real.call(WebAssembly, source, ...rest);
+  const instantiate = async (source: BufferSource | WebAssembly.Module, imports?: WebAssembly.Imports) => {
+    const result = source instanceof WebAssembly.Module ? await real(source, imports) : await real(source, imports);
     if (source !== module) return result;
     const instance = result instanceof WebAssembly.Instance ? result : result.instance;
     const memory = instance.exports.memory;
@@ -118,6 +121,8 @@ export async function initWithData(init, code, segments, chunks) {
     written = true;
     return result;
   };
+  // The wrapper preserves both native overloads: modules yield an Instance, bytes yield an instantiated source.
+  WebAssembly.instantiate = instantiate as typeof WebAssembly.instantiate;
   try {
     const out = await init({ module_or_path: module });
     if (!written) throw codedError("engine-failed", "the program started without its data (the glue did not call WebAssembly.instantiate)");

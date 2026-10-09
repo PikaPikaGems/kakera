@@ -6,8 +6,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { collect, fileStore, memoryStorage } from "../src/files.js";
-import { contentVersion, splitFile, writeManifest } from "../src/split.js";
+import { collect, fileStore, memoryStorage } from "../dist/files.js";
+import { contentVersion, splitFile, writeManifest } from "../dist/split.js";
 
 const PART = 64 * 1024; // small parts so every file has several
 const random = (n) => new Uint8Array(crypto.randomBytes(n)); // incompressible, like a voice model

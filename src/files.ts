@@ -14,34 +14,49 @@
 //   "<name>@<version>/<part file>"   bytes of one part, as downloaded
 //   "<name>@<version>"               the manifest, written last: its presence means every part is stored
 //   "manifest:<manifest url>"        the last manifest seen at that URL, so stored files also load offline
-import { codedError } from "./errors.js";
+import { codedError, errorFields } from "./errors.js";
+
+import type { Manifest, ManifestFile, FilePart, FileProgress, ByteChunks } from "./types.js";
+/** Values are trusted at this local storage boundary; callers choose the stored value type. */
+export interface FileStorage {
+  get<T = unknown>(key: IDBValidKey): Promise<T | undefined>;
+  put(key: IDBValidKey, value: unknown): Promise<unknown>;
+  keys(): Promise<IDBValidKey[]>;
+  remove(keys: IDBValidKey[]): Promise<void>;
+}
+export interface FileLoadOptions {
+  onFile(file: ManifestFile, chunks: AsyncIterable<Uint8Array>, manifest: Manifest): void | Promise<void>;
+  onProgress?(progress: FileProgress): void;
+  log?(message: string): void;
+}
+export interface FileLoadResult { manifest: Manifest; fromCache: boolean; cached: boolean }
 
 export const MANIFEST_FORMAT = "kakera/1";
 
 // ------------------------------------------------------------------------------------------------ storage
 
 /** Key/value storage in IndexedDB (one database per package, one object store). */
-export function indexedDbStorage(dbName) {
-  const open = () => new Promise((resolve, reject) => {
-    const req = indexedDB.open(dbName, 1);
+export function indexedDbStorage(dbName?: string): FileStorage {
+  const open = () => new Promise<IDBDatabase>((resolve, reject) => {
+    const req = indexedDB.open(String(dbName), 1);
     req.onupgradeneeded = () => req.result.createObjectStore("files");
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
-  const tx = async (mode, fn) => {
+  const tx = async <T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T> | void): Promise<T> => {
     const db = await open();
     try {
-      return await new Promise((resolve, reject) => {
+      return await new Promise<T>((resolve, reject) => {
         const t = db.transaction("files", mode);
         const req = fn(t.objectStore("files"));
-        t.oncomplete = () => resolve(req?.result);
+        t.oncomplete = () => resolve(req?.result as T);
         t.onerror = () => reject(t.error);
         t.onabort = () => reject(t.error);
       });
     } finally { db.close(); }
   };
   return {
-    get: (key) => tx("readonly", (s) => s.get(key)),
+    get: <T = unknown>(key: IDBValidKey) => tx<T | undefined>("readonly", (s) => s.get(key)),
     put: (key, value) => tx("readwrite", (s) => s.put(value, key)),
     keys: () => tx("readonly", (s) => s.getAllKeys()),
     remove: (keys) => (keys.length ? tx("readwrite", (s) => { for (const k of keys) s.delete(k); }) : Promise.resolve()),
@@ -49,10 +64,10 @@ export function indexedDbStorage(dbName) {
 }
 
 /** Storage in a Map (tests, or environments without IndexedDB). */
-export function memoryStorage() {
-  const m = new Map();
+export function memoryStorage(): FileStorage & { map: Map<IDBValidKey, unknown> } {
+  const m = new Map<IDBValidKey, unknown>();
   return {
-    get: async (key) => m.get(key),
+    get: async <T = unknown>(key: IDBValidKey) => m.get(key) as T | undefined,
     put: async (key, value) => { m.set(key, value); },
     keys: async () => [...m.keys()],
     remove: async (keys) => { for (const k of keys) m.delete(k); },
@@ -62,12 +77,12 @@ export function memoryStorage() {
 
 // ------------------------------------------------------------------------------------------------ helpers
 
-const sha256Hex = async (bytes) => {
+const sha256Hex = async (bytes: Uint8Array<ArrayBuffer>) => {
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-async function* gunzip(bytes) {
+async function* gunzip(bytes: Uint8Array<ArrayBuffer>) {
   const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")).getReader();
   for (;;) {
     const { done, value } = await reader.read();
@@ -77,7 +92,7 @@ async function* gunzip(bytes) {
 }
 
 /** Gather streamed pieces into one buffer of a known size. */
-export async function collect(chunks, size) {
+export async function collect(chunks: ByteChunks, size: number) {
   const out = new Uint8Array(size);
   let n = 0;
   for await (const c of chunks) {
@@ -97,39 +112,39 @@ export async function collect(chunks, size) {
  * @param {object} [o.storage]  { get, put, keys, remove } (default: IndexedDB)
  * @param {typeof fetch} [o.fetch]
  */
-export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
-  storage ??= indexedDbStorage(dbName);
-  const doFetch = fetchFn ?? ((...a) => fetch(...a));
-  const idOf = (m) => `${m.name}@${m.version}`;
+export function fileStore({ dbName, storage: suppliedStorage, fetch: fetchFn }: { dbName?: string; storage?: FileStorage; fetch?: typeof fetch } = {}) {
+  const storage = suppliedStorage ?? indexedDbStorage(dbName);
+  const doFetch: typeof fetch = fetchFn ?? ((...a) => fetch(...a));
+  const idOf = (m: Manifest) => `${m.name}@${m.version}`;
 
-  async function getManifest(url) {
+  async function getManifest(url: string): Promise<Manifest> {
     try {
       const res = await doFetch(url, { cache: "no-cache" });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const m = await res.json();
+      const m = await res.json() as Manifest;
       if (m.format !== MANIFEST_FORMAT) throw new Error(`unknown manifest format ${m.format}`);
       storage.put(`manifest:${url}`, m).catch(() => {});
       return m;
     } catch (err) {
-      const saved = await storage.get(`manifest:${url}`).catch(() => null);
+      const saved = await storage.get<Manifest>(`manifest:${url}`).catch(() => null);
       if (saved) return saved;
-      throw codedError("download-failed", `could not load ${url}: ${err.message}`);
+      throw codedError("download-failed", `could not load ${url}: ${errorFields(err).message}`);
     }
   }
 
   /** Delete stored parts of `name`, except those of `keepId` (all of them when keepId is null). */
-  async function removeName(name, keepId) {
+  async function removeName(name: string, keepId: string | null) {
     const keys = await storage.keys();
     await storage.remove(keys.filter((k) => typeof k === "string" && k.startsWith(`${name}@`)
       && (!keepId || (k !== keepId && !k.startsWith(`${keepId}/`)))));
   }
 
-  async function download(url, expected, onBytes) {
+  async function download(url: string | URL, expected: number, onBytes: (bytes: number) => void) {
     let res;
-    try { res = await doFetch(url); } catch (e) { throw codedError("download-failed", `${url}: ${e.message}`); }
+    try { res = await doFetch(url); } catch (e) { throw codedError("download-failed", `${url}: ${errorFields(e).message}`); }
     if (!res.ok) throw codedError("download-failed", `${url}: ${res.status} ${res.statusText}`);
     const out = new Uint8Array(expected);
-    const reader = res.body.getReader();
+    const reader = res.body!.getReader();
     let n = 0;
     try {
       for (;;) {
@@ -141,7 +156,7 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
         onBytes(value.length);
       }
     } catch (e) {
-      throw e.code ? e : codedError("download-failed", `${url}: ${e.message}`);
+      throw errorFields(e).code ? e : codedError("download-failed", `${url}: ${errorFields(e).message}`);
     }
     if (n !== expected) throw codedError("download-failed", `${url}: got ${n} bytes, the manifest says ${expected}`);
     return out;
@@ -149,23 +164,23 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
 
   return {
     /** Is everything stored on the device, and how big is the download if not? */
-    async info(manifestUrl) {
+    async info(manifestUrl: string) {
       const m = await getManifest(manifestUrl);
       const cached = !!(await storage.get(idOf(m)).catch(() => null));
       return { cached, downloadBytes: m.downloadSize, manifest: m };
     },
 
     /** Describe which manifest parts are stored without reading their contents. */
-    async diagnostics(manifestUrl) {
+    async diagnostics(manifestUrl: string) {
       const manifest = await getManifest(manifestUrl);
       const id = idOf(manifest);
-      let keys = null, complete = "unknown";
+      let keys: Set<IDBValidKey> | null = null, complete: boolean | "unknown" = "unknown";
       try { keys = new Set(await storage.keys()); } catch { /* storage may be blocked */ }
       try { complete = !!(await storage.get(id)); } catch { /* storage may be blocked */ }
       const files = manifest.files.map((file) => {
         const parts = file.parts.map((part) => ({
           file: part.file,
-          cached: keys ? keys.has(`${id}/${part.file}`) : "unknown",
+          cached: keys ? keys.has(`${id}/${part.file}`) : "unknown" as const,
         }));
         return { name: file.name, parts };
       });
@@ -177,7 +192,7 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
     },
 
     /** Delete everything stored for the manifest's name (all versions). */
-    async clear(manifestUrl) {
+    async clear(manifestUrl: string) {
       const m = await getManifest(manifestUrl);
       await removeName(m.name, null);
     },
@@ -200,11 +215,11 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
      * @returns {Promise<{ manifest: object, fromCache: boolean, cached: boolean }>}
      *   fromCache: nothing was downloaded; cached: everything is now stored on the device
      */
-    async load(manifestUrl, { onFile, onProgress = () => {}, log = () => {} }) {
+    async load(manifestUrl: string, { onFile, onProgress = () => {}, log = () => {} }: FileLoadOptions): Promise<FileLoadResult> {
       if (typeof DecompressionStream !== "function") throw codedError("unsupported-browser", "this browser cannot unpack gzip (needs Safari 16.4+ or a recent Chrome/Firefox)");
-      const where = { file: null, fileIndex: 0, files: 0, part: 0, parts: 0 };
+      const where: { file: string | null; fileIndex: number; files: number; part: number; parts: number } = { file: null, fileIndex: 0, files: 0, part: 0, parts: 0 };
       const counts = { downloaded: 0, toDownload: 0, unpacked: 0, toUnpack: 0 };
-      const report = (step) => onProgress({ step, ...where, ...counts });
+      const report = (step: string) => onProgress({ step, ...where, ...counts });
       report("manifest");
       const m = await getManifest(manifestUrl);
       const id = idOf(m);
@@ -221,10 +236,10 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
       let storing = true, downloaded = false, lastReport = 0;
 
       /** Bytes of one part as on the server: from the device, or downloaded, checked and stored. */
-      const partBytes = async ({ file: name, size, sha256 }) => {
+      const partBytes = async ({ file: name, size, sha256 }: FilePart) => {
         const key = `${id}/${name}`;
         report("read");
-        const fromDevice = await storage.get(key).catch(() => null);
+        const fromDevice = await storage.get<ArrayBuffer>(key).catch(() => null);
         if (fromDevice) return new Uint8Array(fromDevice);
         if (complete) {
           log(`${name} was missing from the device; downloading it again.`);
@@ -245,7 +260,7 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
         if (storing) {
           report("store");
           try { await storage.put(key, bytes.buffer); }
-          catch (e) { storing = false; log(`Could not store the files on this device (${e?.name ?? e}); they will download again next time.`); }
+          catch (e) { storing = false; log(`Could not store the files on this device (${errorFields(e).name ?? e}); they will download again next time.`); }
         }
         return bytes;
       };
@@ -272,7 +287,7 @@ export function fileStore({ dbName, storage, fetch: fetchFn } = {}) {
         try {
           await storage.put(id, m); // marks the stored copy complete
           await removeName(m.name, id); // drop older versions
-        } catch (e) { storing = false; log(`Could not finish storing the files (${e?.name ?? e}).`); }
+        } catch (e) { storing = false; log(`Could not finish storing the files (${errorFields(e).name ?? e}).`); }
       }
       return { manifest: m, fromCache: !downloaded, cached: complete || storing };
     },

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPool, fileStore, KakeraError, memoryStorage } from "../src/index.js";
+import { createPool, fileStore, KakeraError, memoryStorage } from "../dist/index.js";
 
 test("file diagnostics list cached and missing parts without reading file data", async () => {
   const manifest = {
