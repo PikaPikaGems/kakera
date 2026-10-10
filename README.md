@@ -42,6 +42,7 @@ const engine = pool.handle({
 await engine.load();                                       // { fromCache, ms, timings: [{ step, file, part, at, ms }] }
 const audio = await engine.call("speak", { text }, { stall: 20_000, signal });
 engine.status; engine.on("status" | "progress" | "log", fn); engine.info(); engine.unload(); engine.dispose();
+await engine.clearCache();   // delete the files; every handle that loaded goes back to "not-loaded"
 ```
 
 `progress` events: `{ stage: "downloading" | "preparing" | "ready", fraction, loaded, total, step, file, part, parts,

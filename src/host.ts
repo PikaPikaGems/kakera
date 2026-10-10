@@ -247,7 +247,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
   class EngineHost {
     name: string; url: string; key: string; createWorker: () => Worker;
     status: EngineStatus; worker: Worker | null; loading: Promise<LoadResult> | null;
-    pending: Map<number, PendingCall>; nextId: number; users: Set<Handle>;
+    pending: Map<number, PendingCall>; nextId: number; users: Set<Handle>; loadedBy: Set<Handle>;
     idleTimer: ReturnType<typeof setTimeout> | undefined; stopWhenDone: boolean; lastLoad: LastLoad | null;
     constructor({ name, manifestUrl, createWorker }: { name: string; manifestUrl: string; createWorker: () => Worker }) {
       this.name = name;
@@ -260,6 +260,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
       this.pending = new Map(); // id -> { resolve, reject, onProgress, stall, timer, cleanup }
       this.nextId = 1;
       this.users = new Set();
+      this.loadedBy = new Set(); // handles whose load() succeeded (their calls may reload the engine by themselves)
       this.idleTimer = undefined;
       this.stopWhenDone = false; // the page went hidden during a call: stop once nothing is pending
       this.lastLoad = null;
@@ -596,6 +597,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
       try {
         const res = await this._host.load();
         this._loaded = true;
+        this._host.loadedBy.add(this);
         this._emitStatus();
         if (!res.fromCache && this._opts.persistStorage) navigator.storage?.persist?.()?.catch?.(() => {});
         return { fromCache: !!res.fromCache, ...(res.timings && { ms: res.ms, timings: res.timings }) };
@@ -604,7 +606,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
         this._active = false;
         this._host.users.delete(this);
         this._host.release();
-        this._fail("error");
+        this._fail(errorFields(err).code === "disposed" ? "not-loaded" : "error"); // disposed: clearCache() or dispose()
         const { workerUrl, missingHint } = this._opts;
         throw workerUrl && errorFields(err).code === "engine-failed" && /failed to start/.test(String(errorFields(err).message))
           ? await explainStartFailure(workerUrl, err, ErrorClass, missingHint) : err;
@@ -655,7 +657,13 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
 
     /** Back to "not-loaded": pending calls reject with "disposed"; load() is needed again. */
     dispose() {
-      const err = new ErrorClass("disposed", "disposed");
+      this._reset(new ErrorClass("disposed", "disposed"));
+      this._host.release();
+      handlesWithHiddenHook.delete(this);
+    }
+
+    /** Back to "not-loaded" without stopping the engine: pending calls reject with `err`. */
+    _reset(err: Error) {
       for (const reject of [...this._calls]) reject(err);
       this._calls.clear();
       this._disposeCtrl.abort(); // drop those calls from the worker too, so it isn't kept busy for nobody
@@ -663,14 +671,21 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
       this._active = false;
       this._loaded = false;
       this._host.users.delete(this);
-      this._host.release();
-      handlesWithHiddenHook.delete(this);
+      this._host.loadedBy.delete(this);
       this._own = "not-loaded";
       this._emitStatus();
     }
 
-    /** Delete the engine's files from this device. */
-    async clearCache() { await this._files.clear(this._host.url); }
+    /**
+     * Delete the engine's files from this device. Also stops the engine and puts every handle that loaded it back to
+     * "not-loaded" (pending calls reject with "disposed"), so nothing downloads again until a load().
+     */
+    async clearCache() {
+      const err = new ErrorClass("disposed", `${this._opts.name}'s files were deleted from this device`);
+      for (const h of new Set([...this._host.loadedBy, ...this._host.users, this])) h._reset(err);
+      this._host.kill(err, "not-loaded");
+      await this._files.clear(this._host.url);
+    }
 
     /** Forget a recorded crash so the next load() tries again. */
     resetCrashGuard() {

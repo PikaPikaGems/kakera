@@ -8,4 +8,6 @@
 - [x] React hooks' shared state (2026-10-10): `engineStore()` in `kakera/store`, used by `useWakachiEngine()` /
       `useYomiageEngine()` and the use hooks. Also fixed: a handle said `"ready"` a moment before its own `load()`
       had finished, so a call made on that status event failed with `not-loaded`; it now says `"loading"` until then.
+- [x] `clearCache()` (2026-10-10): stops the engine and puts every handle that loaded it back to `"not-loaded"`, so
+      nothing downloads again until a `load()` (before, the next call silently downloaded everything again).
 - [ ] CI: Node tests and test/host.html.

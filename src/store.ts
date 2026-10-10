@@ -85,7 +85,9 @@ export function engineStore<S extends string, P>(engine: StoreEngine<S, P>): Eng
       try {
         await engine.load();
       } catch (err) {
-        set({ status: engine.status, error: err instanceof Error ? err : new Error(String(err)) });
+        // "disposed": the files were deleted (clearCache()) during the load; not a failure to show
+        const disposed = (err as { code?: unknown } | null)?.code === "disposed";
+        set({ status: engine.status, error: disposed ? null : err instanceof Error ? err : new Error(String(err)) });
       }
       await refreshInfo();
     },
