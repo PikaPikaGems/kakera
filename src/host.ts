@@ -512,6 +512,7 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
 
     _attach() {
       this._active = true;
+      if (this._onHidden) handlesWithHiddenHook.add(this); // dispose() removed it; loading again brings it back
       this._host.users.add(this);
       this._emitStatus();
     }

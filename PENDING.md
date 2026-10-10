@@ -11,3 +11,6 @@
 - [x] `clearCache()` (2026-10-10): stops the engine and puts every handle that loaded it back to `"not-loaded"`, so
       nothing downloads again until a `load()` (before, the next call silently downloaded everything again).
 - [ ] CI: Node tests and test/host.html.
+- [x] Page-hidden hook after `dispose()` (2026-10-10): `dispose()` removed a handle's `onHidden` hook for good, so a
+      yomiage voice disposed and loaded again kept speaking in a background tab, and its next sentence reloaded the
+      engine there. Loading again now brings the hook back (host test + yomiage's test page check it).

@@ -166,6 +166,20 @@ async function phase1() {
     eq(c.status, "not-loaded", "status");
   });
 
+  await t("the onHidden hook still runs after dispose() and loading again", async () => {
+    const c = make();
+    let hook = 0;
+    c.onHidden(() => hook++);
+    await c.load();
+    c.dispose();
+    await c.load();
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    delete document.visibilityState;
+    eq(hook, 1, "hook");
+    c.dispose();
+  });
+
   await t("idle timeout stops the worker", async () => {
     a.dispose();
     const d = make({ idleTimeout: 200 });
