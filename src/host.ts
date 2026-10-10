@@ -476,7 +476,11 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
 
     get status(): EngineStatus {
       // attached: the engine's own status (downloading, loading, ready, ...); detached: stopped once it has loaded
-      if (this._active) return this._host.status === "not-loaded" ? (this._loaded ? "stopped" : "loading") : this._host.status;
+      // (not "ready" before this handle's load() has finished: calls would still reject with "not-loaded")
+      if (this._active) {
+        const s = this._host.status;
+        return s === "not-loaded" ? (this._loaded ? "stopped" : "loading") : s === "ready" && !this._loaded ? "loading" : s;
+      }
       return this._loaded ? "stopped" : this._own;
     }
 

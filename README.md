@@ -20,6 +20,7 @@ Moved out of jp-tts-playground's `packages/jp-analyzer` and made generic:
 | Load in parts | Downloads the parts, checks them, unpacks them one at a time and stores the compressed parts in IndexedDB, so later visits download nothing. Streams into the destination (e.g. wasm memory) without holding a second full copy |
 | Worker host | Runs an engine in a Web Worker, shared by every handle on the page: crash guard (never the same crash twice), stall timeouts, stop when idle or when the page is hidden, cancelling |
 | Errors and statuses | One `Error` class with codes and one set of statuses, so wakachi and yomiage behave the same |
+| Engine store | `engineStore(analyzerOrVoice)` (`kakera/store`): the state a settings page shows (status, on the device, download size, progress, last error) as one snapshot with `subscribe` / `getSnapshot`, for the packages' React hooks. No React inside |
 
 ## Use (inside wakachi / yomiage)
 

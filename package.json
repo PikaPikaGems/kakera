@@ -31,6 +31,11 @@
       "import": "./dist/errors.js",
       "default": "./dist/errors.js"
     },
+    "./store": {
+      "types": "./dist/store.d.ts",
+      "import": "./dist/store.js",
+      "default": "./dist/store.js"
+    },
     "./wasm": {
       "types": "./dist/wasm.d.ts",
       "import": "./dist/wasm.js",
