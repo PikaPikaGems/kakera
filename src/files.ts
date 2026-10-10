@@ -185,7 +185,11 @@ export function fileStore({ dbName, storage: suppliedStorage, fetch: fetchFn }: 
         return { name: file.name, parts };
       });
       return {
-        manifest: { name: manifest.name, version: manifest.version, format: manifest.format },
+        // `version` is a hash of the files' contents; `meta` says which package version made them (e.g. { wakachi: "0.2.0" })
+        manifest: {
+          name: manifest.name, version: manifest.version, format: manifest.format,
+          meta: Object.fromEntries(Object.entries(manifest.meta ?? {}).filter(([, v]) => typeof v === "string")) as Record<string, string>,
+        },
         cached: complete,
         files,
       };

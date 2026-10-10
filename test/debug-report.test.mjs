@@ -64,3 +64,29 @@ test("debugReport survives a failed load and never includes call text", async ()
     assert.doesNotMatch(report, new RegExp(secret));
   } finally { restore(); }
 });
+
+test("debugReport: manifestMatchesPackage compares the package version in the manifest's meta", async () => {
+  const saved = new Map(["location", "Worker", "indexedDB", "navigator", "fetch", "localStorage", "sessionStorage"]
+    .map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  try {
+    const manifest = { format: "kakera/1", name: "engine", version: "20a3c8f22b09", downloadSize: 1, meta: { wakachi: "1.2.3", segments: [1] },
+      files: [{ name: "a.bin", size: 1, parts: [{ file: "a.bin.part001", size: 1 }] }] };
+    globalThis.location = { href: "https://example.test/app/" };
+    globalThis.indexedDB = { open() { throw new Error("storage blocked"); } };
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Test browser" } });
+    globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+    globalThis.fetch = async () => new Response(JSON.stringify(manifest));
+    const pool = createPool({ prefix: "meta-test", ErrorClass: KakeraError });
+    const handle = pool.handle({ name: "engine", filesUrl: "/files/", createWorker: () => ({}) });
+    assert.match(await handle.debugReport({ packageName: "wakachi", packageVersion: "1.2.3" }), /"manifestMatchesPackage": true/);
+    const other = await handle.debugReport({ packageName: "wakachi", packageVersion: "1.2.4" });
+    assert.match(other, /"manifestMatchesPackage": false/);
+    assert.match(other, /"wakachi": "1\.2\.3"/);
+    assert.doesNotMatch(other, /segments/);
+  } finally {
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  }
+});

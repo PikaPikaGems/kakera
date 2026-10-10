@@ -549,7 +549,8 @@ export function createPool({ prefix, ErrorClass = KakeraError }: { prefix: strin
           },
           filesUrl: safeUrl(this._host.url.replace(/manifest\.json(?:\?.*)?$/, "")),
           manifest: files?.manifest ?? "unknown",
-          manifestMatchesPackage: files?.manifest?.version == null ? "unknown" : files.manifest.version === packageVersion,
+          // the package version the files were made by (manifest meta), against the page's package version
+          manifestMatchesPackage: files?.manifest?.meta?.[packageName] == null ? "unknown" : files.manifest.meta[packageName] === packageVersion,
           files: files?.files ?? "unknown",
           filesError: files?.error ?? undefined,
           status: this.status,
