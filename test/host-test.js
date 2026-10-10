@@ -178,21 +178,23 @@ async function phase1() {
   });
 
   await t("clearCache(): every handle that loaded goes back to not-loaded; nothing downloads until load()", async () => {
-    const parts = () => performance.getEntriesByType("resource").filter((r) => /\.part\d+/.test(r.name)).length;
     const c = make(), d = make();
     await c.load();
     await d.load();
     d.unload(); // detached, but a call of its own would reload the engine
-    const p = c.call("busy", { ms: 500 });
-    const before = parts();
+    const pending = rejects(c.call("busy", { ms: 500 }), (e) => eq(e.code, "disposed", "pending call"));
+    const statuses = [];
+    c.on("status", (st) => statuses.push(st));
+    d.on("status", (st) => statuses.push(st));
     await c.clearCache();
-    await rejects(p, (e) => eq(e.code, "disposed", "pending call"));
+    await pending;
     eq(c.status, "not-loaded", "status");
     eq(d.status, "not-loaded", "other handle");
     eq(workers(), 0, "workers");
     await rejects(d.call("echo", { value: 1 }), (e) => eq(e.code, "not-loaded", "call after clearCache"));
     eq((await c.info()).cached, false, "cached");
-    eq(parts(), before, "nothing downloaded");
+    await sleep(200);
+    assert(!statuses.includes("downloading") && !statuses.includes("loading"), `nothing loaded by itself: ${statuses}`);
     eq((await c.load()).fromCache, false, "load() downloads again");
     eq(c.status, "ready", "ready again");
     eq(d.status, "not-loaded", "the other handle still needs its own load()");
@@ -202,10 +204,10 @@ async function phase1() {
   await t("clearCache() during a load: the load rejects with disposed, status not-loaded", async () => {
     const c = make();
     await c.clearCache();
-    const loading = c.load();
+    const loading = rejects(c.load(), (e) => eq(e.code, "disposed", "code"));
     await sleep(0);
     await c.clearCache();
-    await rejects(loading, (e) => eq(e.code, "disposed", "code"));
+    await loading;
     eq(c.status, "not-loaded", "status");
     eq((await c.load()).fromCache, false, "downloads again");
     c.dispose();
